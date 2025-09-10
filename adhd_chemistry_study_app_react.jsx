@@ -8,26 +8,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * - Immediate feedback + progress bar.
  * - Optional text-to-speech for students who benefit from hearing questions.
  * - Keyboard shortcuts: 1–4 to choose an answer; N for Next; S to Skip.
- *
- * JSON SCHEMA (array of items). Each item may be any of the following shapes:
- * 1) { "question": string, "choices": string[], "answer": string }
- * 2) { "question": string, "options": string[], "answer": string }
- * 3) { "question": string, "choices": string[], "answerIndex": number }
- * 4) Minimal (we will try to infer): { "q": string, "a": string, "distractors": string[] }
- *
- * Example file (save as questions.json):
- * [
- *   {
- *     "question": "Which subatomic particle has a negative charge?",
- *     "choices": ["Proton", "Neutron", "Electron", "Alpha particle"],
- *     "answer": "Electron"
- *   },
- *   {
- *     "question": "What is the chemical symbol for sodium?",
- *     "choices": ["Na", "S", "Sn", "N"],
- *     "answer": "Na"
- *   }
- * ]
+ * - Shows a fun classic rock trivia popup when the user answers 2 questions correctly in a row.
  */
 
 // -------------- helpers --------------
@@ -51,6 +32,14 @@ function speak(text: string) {
   synth.cancel();
   synth.speak(u);
 }
+
+const ROCK_TRIVIA = [
+  "The Beatles were originally called The Quarrymen.",
+  "Led Zeppelin's 'Stairway to Heaven' is one of the most famous rock songs ever recorded.",
+  "Queen's 'Bohemian Rhapsody' was recorded in six different studios.",
+  "The Rolling Stones were formed in London in 1962.",
+  "Pink Floyd's album 'The Dark Side of the Moon' remained on the Billboard charts for over 14 years."
+];
 
 // -------------- types --------------
 export type RawItem = {
@@ -89,13 +78,15 @@ function normalize(raw: RawItem, idx: number): Item | null {
 // -------------- main component --------------
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
-  const [order, setOrder] = useState<number[]>([]); // randomized question indices
-  const [i, setI] = useState(0); // pointer into order
+  const [order, setOrder] = useState<number[]>([]);
+  const [i, setI] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState<null | "correct" | "wrong">(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [tts, setTts] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streak, setStreak] = useState(0);
+  const [trivia, setTrivia] = useState<string | null>(null);
 
   const current: Item | null = useMemo(() => {
     if (!items.length || !order.length) return null;
@@ -103,7 +94,6 @@ export default function App() {
     return items[idx] ?? null;
   }, [items, order, i]);
 
-  // Keyboard shortcuts: 1-4 choose, N next, S skip
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!current) return;
@@ -125,7 +115,6 @@ export default function App() {
 
   function visibleChoices(): string[] {
     if (!current) return [];
-    // keep the answer present, then fill from other choices and shuffle
     const others = current.choices.filter((c) => c !== current.answer);
     const base = shuffle([current.answer, ...others]).slice(0, Math.max(4, Math.min(4, current.choices.length)));
     return base.length >= 2 ? base : shuffle(current.choices);
@@ -158,11 +147,25 @@ export default function App() {
 
   function select(choice: string) {
     if (!current) return;
-    if (picked) return; // lock after choice until Next
+    if (picked) return;
     setPicked(choice);
     const isCorrect = choice === current.answer;
     setShowFeedback(isCorrect ? "correct" : "wrong");
     setScore((s) => ({ correct: s.correct + (isCorrect ? 1 : 0), total: s.total + 1 }));
+
+    if (isCorrect) {
+      const newStreak = streak + 1;
+      if (newStreak >= 2) {
+        const randomFact = ROCK_TRIVIA[Math.floor(Math.random() * ROCK_TRIVIA.length)];
+        setTrivia(randomFact);
+        setStreak(0);
+      } else {
+        setStreak(newStreak);
+      }
+    } else {
+      setStreak(0);
+    }
+
     if (tts) speak(isCorrect ? "Correct! Nice work." : `Not quite. The correct answer is ${current.answer}.`);
   }
 
@@ -174,7 +177,6 @@ export default function App() {
   }
 
   function skip() {
-    // Move current question to end of order
     setOrder((ord) => {
       if (!ord.length) return ord;
       const cur = ord[i];
@@ -183,13 +185,22 @@ export default function App() {
     });
     setPicked(null);
     setShowFeedback(null);
-    // keep same pointer so we see the next item (which slid into current index)
   }
 
   const pct = items.length ? Math.round(((i + (picked ? 1 : 0)) / order.length) * 100) : 0;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
+      {trivia && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/50 z-20">
+          <div className="bg-white p-6 rounded shadow-xl max-w-sm text-center">
+            <h2 className="text-lg font-bold mb-2">Classic Rock Trivia</h2>
+            <p className="mb-4">{trivia}</p>
+            <button className="px-4 py-2 bg-indigo-600 text-white rounded" onClick={() => setTrivia(null)}>Close</button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -243,7 +254,6 @@ export default function App() {
             <div className="text-gray-600 text-sm">Upload a JSON file to begin. Use the sample above if you need a template.</div>
           ) : (
             <>
-              {/* Progress */}
               <div className="mb-4">
                 <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
                   <div className="h-2 bg-indigo-500" style={{ width: `${pct}%` }} />
@@ -251,10 +261,8 @@ export default function App() {
                 <div className="mt-1 text-xs text-gray-500">Question {i + 1} of {order.length} • Score: {score.correct}/{score.total}</div>
               </div>
 
-              {/* Question */}
               <h2 className="text-base font-semibold leading-snug">{current.question}</h2>
 
-              {/* Choices */}
               <div className="mt-4 grid gap-2">
                 {visibleChoices().map((choice, idx) => {
                   const chosen = picked === choice;
@@ -285,7 +293,6 @@ export default function App() {
                 })}
               </div>
 
-              {/* Feedback & Controls */}
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 {showFeedback === "correct" && (
                   <div className="text-green-700 text-sm">Nice! That’s correct.</div>
@@ -306,7 +313,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Study tips (ADHD-friendly) */}
         <div className="mt-6 text-xs text-gray-600 space-y-1">
           <div>• Keep it short: Aim for 10–15 minutes, then take a 2–3 minute break.</div>
           <div>• Reduce clutter: Only one question on screen. Big, high-contrast buttons.</div>
