@@ -1,14 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 /**
  * ADHD-Friendly Chemistry Study App (Grade 10)
  * -------------------------------------------------------------
  * - Upload a JSON file of multiple-choice questions.
- * - Presents one question at a time with large, easy-to-tap choices.
- * - Immediate feedback + progress bar.
- * - Optional text-to-speech for students who benefit from hearing questions.
- * - Keyboard shortcuts: 1–4 to choose an answer; N for Next; S to Skip.
- * - Shows a fun classic rock trivia popup when the user answers 2 questions correctly in a row.
+ * - Upload a JSON file of classic rock trivia facts.
+ * - Trivia is shown after 2 consecutive correct answers, facts are non-repeating.
  */
 
 // -------------- helpers --------------
@@ -26,20 +23,12 @@ function speak(text: string) {
   const synth = (window as any).speechSynthesis as SpeechSynthesis | undefined;
   if (!synth) return;
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.03; // gentle boost
+  u.rate = 1.03;
   u.pitch = 1;
   u.lang = "en-US";
   synth.cancel();
   synth.speak(u);
 }
-
-const ROCK_TRIVIA = [
-  "The Beatles were originally called The Quarrymen.",
-  "Led Zeppelin's 'Stairway to Heaven' is one of the most famous rock songs ever recorded.",
-  "Queen's 'Bohemian Rhapsody' was recorded in six different studios.",
-  "The Rolling Stones were formed in London in 1962.",
-  "Pink Floyd's album 'The Dark Side of the Moon' remained on the Billboard charts for over 14 years."
-];
 
 // -------------- types --------------
 export type RawItem = {
@@ -51,8 +40,8 @@ export type RawItem = {
 export type Item = {
   id: string;
   question: string;
-  choices: string[]; // length >= 2
-  answer: string;    // the correct choice string
+  choices: string[];
+  answer: string;
 };
 
 function normalize(raw: RawItem, idx: number): Item | null {
@@ -87,6 +76,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [streak, setStreak] = useState(0);
   const [trivia, setTrivia] = useState<string | null>(null);
+  const [availableTrivia, setAvailableTrivia] = useState<string[]>([]);
 
   const current: Item | null = useMemo(() => {
     if (!items.length || !order.length) return null;
@@ -120,7 +110,7 @@ export default function App() {
     return base.length >= 2 ? base : shuffle(current.choices);
   }
 
-  function onUpload(file: File | undefined | null) {
+  function onUploadQuestions(file: File | undefined | null) {
     if (!file) return;
     setError(null);
     const reader = new FileReader();
@@ -130,7 +120,7 @@ export default function App() {
         const json = JSON.parse(String(reader.result || "[]")) as RawItem[];
         if (!Array.isArray(json)) throw new Error("JSON must be an array of items");
         const normalized = json.map(normalize).filter(Boolean) as Item[];
-        if (!normalized.length) throw new Error("No valid questions found. Check the schema in the header comment.");
+        if (!normalized.length) throw new Error("No valid questions found.");
         setItems(normalized);
         setOrder(shuffle([...normalized.keys()]));
         setI(0);
@@ -140,6 +130,23 @@ export default function App() {
         if (tts) speak(`Loaded ${normalized.length} questions.`);
       } catch (err: any) {
         setError(err?.message || "Invalid JSON file.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function onUploadTrivia(file: File | undefined | null) {
+    if (!file) return;
+    setError(null);
+    const reader = new FileReader();
+    reader.onerror = () => setError("Could not read trivia file.");
+    reader.onload = () => {
+      try {
+        const json = JSON.parse(String(reader.result || "[]"));
+        if (!Array.isArray(json)) throw new Error("Trivia JSON must be an array of strings.");
+        setAvailableTrivia(shuffle(json));
+      } catch (err: any) {
+        setError(err?.message || "Invalid trivia JSON file.");
       }
     };
     reader.readAsText(file);
@@ -155,9 +162,10 @@ export default function App() {
 
     if (isCorrect) {
       const newStreak = streak + 1;
-      if (newStreak >= 2) {
-        const randomFact = ROCK_TRIVIA[Math.floor(Math.random() * ROCK_TRIVIA.length)];
-        setTrivia(randomFact);
+      if (newStreak >= 2 && availableTrivia.length > 0) {
+        const [fact, ...rest] = availableTrivia;
+        setTrivia(fact);
+        setAvailableTrivia(rest);
         setStreak(0);
       } else {
         setStreak(newStreak);
@@ -201,7 +209,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Header */}
       <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-lg font-semibold">ADHD-Friendly Chemistry Coach</h1>
@@ -210,17 +217,19 @@ export default function App() {
               <input type="checkbox" checked={tts} onChange={(e) => setTts(e.target.checked)} />
               Read aloud
             </label>
+            <div>
+              <span className="mr-2">Upload Trivia:</span>
+              <input type="file" accept=".json,application/json" onChange={(e) => onUploadTrivia(e.target.files?.[0] || null)} />
+            </div>
             <a
               href={URL.createObjectURL(new Blob([
                 JSON.stringify([
                   { question: "Which subatomic particle has a negative charge?", choices: ["Proton", "Neutron", "Electron", "Alpha particle"], answer: "Electron" },
-                  { question: "What is the chemical symbol for sodium?", choices: ["Na", "S", "Sn", "N"], answer: "Na" },
-                  { question: "Which element has the atomic number 6?", choices: ["Carbon", "Oxygen", "Nitrogen", "Fluorine"], answer: "Carbon" },
-                  { question: "What type of bond involves sharing electron pairs?", choices: ["Ionic bond", "Covalent bond", "Metallic bond", "Hydrogen bond"], answer: "Covalent bond" }
+                  { question: "What is the chemical symbol for sodium?", choices: ["Na", "S", "Sn", "N"], answer: "Na" }
                 ], null, 2)
               ], { type: "application/json" }))}
               download="chemistry_questions_sample.json"
-              className="underline text-indigo-700 hover:text-indigo-900"
+              className="underline text-indigo-700 hover:text-indigo-900 ml-4"
             >
               Download sample JSON
             </a>
@@ -228,30 +237,27 @@ export default function App() {
         </div>
       </header>
 
-      {/* Uploader */}
       <section className="max-w-5xl mx-auto px-4 py-4">
         <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center">
           <div className="flex-1">
             <div className="font-medium">Upload your questions (.json)</div>
-            <div className="text-xs text-gray-600">Array of items with question, choices/options, and answer (string or index). See schema above.</div>
             {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
           </div>
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input
               type="file"
               accept=".json,application/json"
-              onChange={(e) => onUpload(e.target.files?.[0] || null)}
+              onChange={(e) => onUploadQuestions(e.target.files?.[0] || null)}
               className="block text-sm"
             />
           </label>
         </div>
       </section>
 
-      {/* Main card */}
       <main className="max-w-5xl mx-auto px-4 pb-10">
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           {!current ? (
-            <div className="text-gray-600 text-sm">Upload a JSON file to begin. Use the sample above if you need a template.</div>
+            <div className="text-gray-600 text-sm">Upload a JSON file to begin.</div>
           ) : (
             <>
               <div className="mb-4">
@@ -311,13 +317,6 @@ export default function App() {
               </div>
             </>
           )}
-        </div>
-
-        <div className="mt-6 text-xs text-gray-600 space-y-1">
-          <div>• Keep it short: Aim for 10–15 minutes, then take a 2–3 minute break.</div>
-          <div>• Reduce clutter: Only one question on screen. Big, high-contrast buttons.</div>
-          <div>• Use audio: Turn on "Read aloud" if hearing the question helps focus.</div>
-          <div>• Repeat misses: Use "Skip" for tough ones and come back with a fresh mind.</div>
         </div>
       </main>
     </div>
