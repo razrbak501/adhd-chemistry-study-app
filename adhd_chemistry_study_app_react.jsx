@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 
 /**
  * ADHD-Friendly Chemistry Study App (Grade 10)
  * -------------------------------------------------------------
- * - Upload a JSON file of multiple-choice questions.
+ * - Upload a JSON file of multiple-choice and definition questions.
  * - Upload a JSON file of classic rock trivia facts.
  * - Trivia is shown after 2 consecutive correct answers, facts are non-repeating.
+ * - Supports partial matches and synonyms for definition questions.
  */
 
-// -------------- helpers --------------
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -30,18 +30,21 @@ function speak(text: string) {
   synth.speak(u);
 }
 
-// -------------- types --------------
 export type RawItem = {
   question?: string; q?: string;
   choices?: string[]; options?: string[]; distractors?: string[];
-  answer?: string; answerIndex?: number; a?: string;
+  answer?: string | string[]; answerIndex?: number; a?: string;
+  synonyms?: string[];
+  type?: string;
 };
 
 export type Item = {
   id: string;
   question: string;
   choices: string[];
-  answer: string;
+  answer: string | string[];
+  synonyms?: string[];
+  type?: string;
 };
 
 function normalize(raw: RawItem, idx: number): Item | null {
@@ -51,7 +54,8 @@ function normalize(raw: RawItem, idx: number): Item | null {
     const distractors = (raw.distractors ?? []) as string[];
     choices = [raw.a, ...distractors];
   }
-  const answer = ((): string | null => {
+  const answer = ((): string | string[] | null => {
+    if (Array.isArray(raw.answer)) return raw.answer.map(a => a.trim());
     if (typeof raw.answer === "string") return raw.answer.trim();
     if (typeof raw.answerIndex === "number" && choices && choices[raw.answerIndex]) return choices[raw.answerIndex];
     if (typeof raw.a === "string") return raw.a.trim();
@@ -59,17 +63,17 @@ function normalize(raw: RawItem, idx: number): Item | null {
   })();
 
   const cleanChoices = Array.isArray(choices) ? choices.map((c) => c?.toString().trim()).filter(Boolean) : [];
-  if (!question || cleanChoices.length < 2 || !answer) return null;
+  if (!question || (!cleanChoices.length && raw.type !== 'definition') || !answer) return null;
   const uniqueChoices = Array.from(new Set(cleanChoices));
-  return { id: `q-${idx}`, question, choices: uniqueChoices, answer };
+  return { id: `q-${idx}`, question, choices: uniqueChoices, answer, synonyms: raw.synonyms, type: raw.type };
 }
 
-// -------------- main component --------------
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [order, setOrder] = useState<number[]>([]);
   const [i, setI] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
+  const [typedAnswer, setTypedAnswer] = useState<string>("");
   const [showFeedback, setShowFeedback] = useState<null | "correct" | "wrong">(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [tts, setTts] = useState(false);
@@ -84,29 +88,10 @@ export default function App() {
     return items[idx] ?? null;
   }, [items, order, i]);
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (!current) return;
-      if (e.key === "n" || e.key === "N") {
-        e.preventDefault();
-        next();
-      } else if (e.key === "s" || e.key === "S") {
-        e.preventDefault();
-        skip();
-      } else if (/^[1-9]$/.test(e.key)) {
-        const idx = Number(e.key) - 1;
-        const choice = visibleChoices()[idx];
-        if (choice) select(choice);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [current, i, items, order]);
-
   function visibleChoices(): string[] {
-    if (!current) return [];
+    if (!current || current.type === 'definition') return [];
     const others = current.choices.filter((c) => c !== current.answer);
-    const base = shuffle([current.answer, ...others]).slice(0, Math.max(4, Math.min(4, current.choices.length)));
+    const base = shuffle([current.answer as string, ...others]).slice(0, Math.max(4, Math.min(4, current.choices.length)));
     return base.length >= 2 ? base : shuffle(current.choices);
   }
 
@@ -125,6 +110,7 @@ export default function App() {
         setOrder(shuffle([...normalized.keys()]));
         setI(0);
         setPicked(null);
+        setTypedAnswer("");
         setShowFeedback(null);
         setScore({ correct: 0, total: 0 });
         if (tts) speak(`Loaded ${normalized.length} questions.`);
@@ -150,6 +136,52 @@ export default function App() {
       }
     };
     reader.readAsText(file);
+  }
+
+  function isDefinitionCorrect(userAnswer: string, correctAnswer: string | string[], synonyms?: string[]): boolean {
+    const normalizeText = (txt: string) => txt.trim().toLowerCase();
+    const ua = normalizeText(userAnswer);
+
+    const answers = Array.isArray(correctAnswer) ? correctAnswer : [correctAnswer];
+    const allPossible = [...answers, ...(synonyms || [])].map(normalizeText);
+
+    // Exact match or synonym match
+    if (allPossible.includes(ua)) return true;
+
+    // Partial match: check if at least 70% of the words match
+    for (const ans of allPossible) {
+      const ansWords = ans.split(" ");
+      const uaWords = ua.split(" ");
+      const matchCount = uaWords.filter(word => ansWords.includes(word)).length;
+      if ((matchCount / ansWords.length) >= 0.7) return true;
+    }
+
+    return false;
+  }
+
+  function checkDefinition() {
+    if (!current) return;
+    if (picked) return;
+    const isCorrect = isDefinitionCorrect(typedAnswer, current.answer, current.synonyms);
+    setPicked(typedAnswer);
+    setShowFeedback(isCorrect ? "correct" : "wrong");
+    setScore((s) => ({ correct: s.correct + (isCorrect ? 1 : 0), total: s.total + 1 }));
+
+    if (isCorrect) {
+      const newStreak = streak + 1;
+      if (newStreak >= 2 && availableTrivia.length > 0) {
+        const [fact, ...rest] = availableTrivia;
+        setTrivia(fact);
+        setAvailableTrivia(rest);
+        setStreak(0);
+      } else {
+        setStreak(newStreak);
+      }
+    } else {
+      setStreak(0);
+    }
+
+    if (tts) speak(isCorrect ? "Correct! Nice work." : `Not quite. The correct answer is ${Array.isArray(current.answer) ? current.answer[0] : current.answer}.`);
   }
 
   function select(choice: string) {
@@ -180,6 +212,7 @@ export default function App() {
   function next() {
     if (!items.length) return;
     setPicked(null);
+    setTypedAnswer("");
     setShowFeedback(null);
     setI((k) => (k + 1 < order.length ? k + 1 : 0));
   }
@@ -192,6 +225,7 @@ export default function App() {
       return [...rest, cur];
     });
     setPicked(null);
+    setTypedAnswer("");
     setShowFeedback(null);
   }
 
@@ -221,18 +255,6 @@ export default function App() {
               <span className="mr-2">Upload Trivia:</span>
               <input type="file" accept=".json,application/json" onChange={(e) => onUploadTrivia(e.target.files?.[0] || null)} />
             </div>
-            <a
-              href={URL.createObjectURL(new Blob([
-                JSON.stringify([
-                  { question: "Which subatomic particle has a negative charge?", choices: ["Proton", "Neutron", "Electron", "Alpha particle"], answer: "Electron" },
-                  { question: "What is the chemical symbol for sodium?", choices: ["Na", "S", "Sn", "N"], answer: "Na" }
-                ], null, 2)
-              ], { type: "application/json" }))}
-              download="chemistry_questions_sample.json"
-              className="underline text-indigo-700 hover:text-indigo-900 ml-4"
-            >
-              Download sample JSON
-            </a>
           </div>
         </div>
       </header>
@@ -269,49 +291,69 @@ export default function App() {
 
               <h2 className="text-base font-semibold leading-snug">{current.question}</h2>
 
-              <div className="mt-4 grid gap-2">
-                {visibleChoices().map((choice, idx) => {
-                  const chosen = picked === choice;
-                  const isCorrect = choice === current.answer;
-                  const show = !!showFeedback;
-                  const base = "w-full text-left px-4 py-3 rounded-lg border transition outline-none";
-                  const normal = "bg-white border-gray-300 hover:bg-gray-50";
-                  const pickedCls = chosen && !show ? "ring-2 ring-indigo-400" : "";
-                  const feedbackCls = show
-                    ? isCorrect
-                      ? "bg-green-50 border-green-300"
-                      : chosen
-                        ? "bg-red-50 border-red-300"
-                        : "opacity-80"
-                    : "";
-                  return (
-                    <button
-                      key={choice}
-                      className={[base, normal, pickedCls, feedbackCls].filter(Boolean).join(" ")}
-                      onClick={() => select(choice)}
-                      disabled={!!picked}
-                      aria-pressed={chosen}
-                    >
-                      <span className="mr-2 text-xs text-gray-500">{idx + 1}.</span>
-                      {choice}
-                    </button>
-                  );
-                })}
-              </div>
+              {current.type === 'definition' ? (
+                <div className="mt-4">
+                  <input
+                    type="text"
+                    value={typedAnswer}
+                    onChange={(e) => setTypedAnswer(e.target.value)}
+                    placeholder="Type your definition here"
+                    className="w-full px-4 py-2 border rounded"
+                    disabled={!!picked}
+                  />
+                  <button
+                    className="mt-2 px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+                    onClick={checkDefinition}
+                    disabled={!!picked || !typedAnswer.trim()}
+                  >
+                    Submit
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 grid gap-2">
+                  {visibleChoices().map((choice, idx) => {
+                    const chosen = picked === choice;
+                    const isCorrect = choice === current.answer;
+                    const show = !!showFeedback;
+                    const base = "w-full text-left px-4 py-3 rounded-lg border transition outline-none";
+                    const normal = "bg-white border-gray-300 hover:bg-gray-50";
+                    const pickedCls = chosen && !show ? "ring-2 ring-indigo-400" : "";
+                    const feedbackCls = show
+                      ? isCorrect
+                        ? "bg-green-50 border-green-300"
+                        : chosen
+                          ? "bg-red-50 border-red-300"
+                          : "opacity-80"
+                      : "";
+                    return (
+                      <button
+                        key={choice}
+                        className={[base, normal, pickedCls, feedbackCls].filter(Boolean).join(" ")}
+                        onClick={() => select(choice)}
+                        disabled={!!picked}
+                        aria-pressed={chosen}
+                      >
+                        <span className="mr-2 text-xs text-gray-500">{idx + 1}.</span>
+                        {choice}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 {showFeedback === "correct" && (
                   <div className="text-green-700 text-sm">Nice! That’s correct.</div>
                 )}
                 {showFeedback === "wrong" && (
-                  <div className="text-red-700 text-sm">Not quite — correct answer: <strong>{current.answer}</strong></div>
+                  <div className="text-red-700 text-sm">Not quite — correct answer: <strong>{Array.isArray(current.answer) ? current.answer.join(', ') : current.answer}</strong></div>
                 )}
                 <div className="ml-auto flex gap-2">
                   <button className="px-3 py-2 rounded-md border border-gray-300 hover:bg-gray-50" onClick={skip}>
-                    Skip (S)
+                    Skip
                   </button>
                   <button className="px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700" onClick={next}>
-                    Next (N)
+                    Next
                   </button>
                 </div>
               </div>
